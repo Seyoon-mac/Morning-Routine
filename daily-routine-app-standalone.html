@@ -401,6 +401,22 @@
     cursor: pointer; font-size: 14px; opacity: 0.6;
   }
   ul.todo-list li .del:hover { opacity: 1; }
+  ul.todo-list li .edit {
+    border: none; background: none; color: #7CA9CC;
+    cursor: pointer; font-size: 13px; opacity: 0.55; flex-shrink: 0;
+  }
+  ul.todo-list li .edit:hover { opacity: 1; }
+  .inline-edit-input {
+    flex: 1;
+    min-width: 0;
+    border: 1.5px solid #7CB8E8;
+    border-radius: 6px;
+    padding: 3px 7px;
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+    background: #fff;
+  }
   .empty-hint { color: #9FB8CC; font-size: 12.5px; text-align: center; padding: 20px 0; }
 
   @keyframes completeExit {
@@ -512,6 +528,15 @@
     font-size: 13px;
   }
   .goal-meta .del:hover { opacity: 1; }
+  .goal-meta .edit {
+    border: none;
+    background: none;
+    color: #7CA9CC;
+    opacity: 0.55;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .goal-meta .edit:hover { opacity: 1; }
   .goal-meta .end-btn {
     border: none;
     background: #DCEEFB;
@@ -1824,6 +1849,14 @@
     const c = calendars.find(c => c.id === calendarId);
     return c ? (c.summary || c.id) : (calendarId || 'Calendar');
   }
+  // Converts a '#RRGGBB' hex string to an 'rgba(r, g, b, alpha)' string, used
+  // to render the translucent tail of multi-day all-day event bars.
+  function hexToRgba(hex, alpha) {
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
+    if (!m) return `rgba(242, 166, 90, ${alpha})`;
+    const r = parseInt(m[1], 16), g = parseInt(m[2], 16), b = parseInt(m[3], 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
 
   // Buckets a Google Calendar event (as returned by list_events/create_event)
   // into eventsByDate for every local date it spans. All-day events use an
@@ -2118,6 +2151,53 @@
     });
   }
 
+  // ---------- Reusable inline-edit (pencil) button for todo/goal text ----------
+  // Returns a small "✎" button that, when clicked, swaps `txtEl` for a text
+  // input pre-filled via getText(). Enter/blur commits the trimmed value
+  // through setText() + saveState() + rerender(); Escape cancels. IME-safe
+  // (won't commit mid-composition on Korean/Japanese input).
+  function makeEditBtn(txtEl, getText, setText, rerender) {
+    const btn = document.createElement('button');
+    btn.className = 'edit';
+    btn.textContent = '✎';
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const current = getText();
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'inline-edit-input';
+      input.value = current;
+      txtEl.replaceWith(input);
+      input.focus();
+      input.select();
+      let composing = false;
+      let finished = false;
+      const finish = (shouldSave) => {
+        if (finished) return;
+        finished = true;
+        if (shouldSave) {
+          const val = input.value.trim();
+          if (val && val !== current) { setText(val); saveState(); }
+        }
+        rerender();
+      };
+      input.addEventListener('compositionstart', () => { composing = true; });
+      input.addEventListener('compositionend', () => { composing = false; });
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' && !composing && ev.keyCode !== 229) {
+          ev.preventDefault();
+          finish(true);
+        } else if (ev.key === 'Escape') {
+          finish(false);
+        }
+      });
+      input.addEventListener('blur', () => finish(true));
+      input.addEventListener('click', (ev) => ev.stopPropagation());
+      input.addEventListener('mousedown', (ev) => ev.stopPropagation());
+    };
+    return btn;
+  }
+
   // ---------- Goal helpers ----------
   function getGoal(id) {
     return state.goals.find(g => g.id === id);
@@ -2169,7 +2249,7 @@
     const card = document.createElement('div');
     card.className = 'goal';
     card.onclick = (e) => {
-      if (e.target.closest('.del') || e.target.closest('.end-btn')) return;
+      if (e.target.closest('.del') || e.target.closest('.end-btn') || e.target.closest('.edit') || e.target.closest('.inline-edit-input')) return;
       openGoalModal(g.id);
     };
 
@@ -2222,6 +2302,14 @@
         };
         rightActions.appendChild(endBtn);
       }
+
+      const editBtn = makeEditBtn(
+        name,
+        () => g.name,
+        (val) => { g.name = val; },
+        () => { if (view === 'monthly') renderMonthly(); else if (view === 'daily') renderGoalsInto('goalsDaily', false); }
+      );
+      rightActions.appendChild(editBtn);
 
       const del = document.createElement('button');
       del.className = 'del';
@@ -2364,6 +2452,7 @@
       const txt = document.createElement('div');
       txt.className = 'txt';
       txt.textContent = t.text;
+      const editBtn = makeEditBtn(txt, () => t.text, (val) => { t.text = val; }, renderModal);
       const del = document.createElement('button');
       del.className = 'del';
       del.textContent = '✕';
@@ -2374,6 +2463,7 @@
       };
       li.appendChild(chk);
       li.appendChild(txt);
+      li.appendChild(editBtn);
       li.appendChild(del);
       modalTodoList.appendChild(li);
     });
@@ -2784,6 +2874,23 @@
           bar.style.setProperty('--evcolor', p.event.hex);
           bar.style.gridColumn = `${p.colStart} / ${p.colEnd + 1}`;
           bar.style.gridRow = String(p.lane + 1);
+          if (p.event.allDay) {
+            // The segment that contains the event's true start date gets a
+            // solid cap over its first day, fading to a translucent fill for
+            // the rest of the span (matching Google Calendar's own look);
+            // continuation segments in later weeks are translucent throughout.
+            const totalDays = p.colEnd - p.colStart + 1;
+            const isStartSeg = p.event.startDate >= wsDate;
+            const tail = hexToRgba(p.event.hex, 0.32);
+            if (isStartSeg && totalDays > 1) {
+              const capPct = (1 / totalDays) * 100;
+              bar.style.background = `linear-gradient(to right, ${p.event.hex} 0%, ${p.event.hex} ${capPct}%, ${tail} ${capPct}%, ${tail} 100%)`;
+            } else if (!isStartSeg) {
+              bar.style.background = tail;
+            }
+            // else: single-day all-day event — leave the default solid
+            // .allday background from CSS as-is.
+          }
           bar.textContent = p.event.allDay ? p.event.title : `${p.event.timeLabel.split(' ')[0]} ${p.event.title}`;
           bar.title = p.event.title;
           bar.onclick = () => { selectCalendarDate(fmtDate(wsDate < p.event.startDate ? p.event.startDate : wsDate)); };
@@ -3206,6 +3313,7 @@
       const txt = document.createElement('div');
       txt.className = 'txt';
       txt.textContent = t.text;
+      const editBtn = makeEditBtn(txt, () => t.text, (val) => { t.text = val; }, renderAllTodoSections);
       const del = document.createElement('button');
       del.className = 'del';
       del.textContent = '✕';
@@ -3216,6 +3324,7 @@
       };
       li.appendChild(chk);
       li.appendChild(txt);
+      li.appendChild(editBtn);
       li.appendChild(del);
       todoList.appendChild(li);
     });
@@ -3265,6 +3374,8 @@
       txt.className = 'txt';
       txt.textContent = t.text + (hasSub ? ` · ${pct}%` : '');
 
+      const editBtn = makeEditBtn(txt, () => t.text, (val) => { t.text = val; }, renderAllTodoSections);
+
       const del = document.createElement('button');
       del.className = 'del';
       del.textContent = '✕';
@@ -3277,6 +3388,7 @@
 
       li.appendChild(chk);
       li.appendChild(txt);
+      li.appendChild(editBtn);
       li.appendChild(del);
       ongoingTodoList.appendChild(li);
     });
@@ -3460,6 +3572,7 @@
         tag.textContent = fmtLabel(currentDate).split(' (')[0];
         txt.appendChild(tag);
       }
+      const editBtn = makeEditBtn(txt, () => s.text, (val) => { s.text = val; }, renderCarryModal);
       const del = document.createElement('button');
       del.className = 'del';
       del.textContent = '✕';
@@ -3470,6 +3583,7 @@
       };
       li.appendChild(chk);
       li.appendChild(txt);
+      li.appendChild(editBtn);
       li.appendChild(del);
       carrySubList.appendChild(li);
     });
