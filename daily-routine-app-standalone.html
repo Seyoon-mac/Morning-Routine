@@ -2875,21 +2875,18 @@
           bar.style.gridColumn = `${p.colStart} / ${p.colEnd + 1}`;
           bar.style.gridRow = String(p.lane + 1);
           if (p.event.allDay) {
-            // The segment that contains the event's true start date gets a
-            // solid cap over its first day, fading to a translucent fill for
-            // the rest of the span (matching Google Calendar's own look);
-            // continuation segments in later weeks are translucent throughout.
-            const totalDays = p.colEnd - p.colStart + 1;
+            // Same front-edge tick as .timed events: the segment containing
+            // the event's true start date gets a solid 3px left border (not
+            // a full day-width block), with a translucent fill across the
+            // whole bar. Continuation segments in later weeks get the
+            // translucent fill only, no border.
             const isStartSeg = p.event.startDate >= wsDate;
-            const tail = hexToRgba(p.event.hex, 0.32);
-            if (isStartSeg && totalDays > 1) {
-              const capPct = (1 / totalDays) * 100;
-              bar.style.background = `linear-gradient(to right, ${p.event.hex} 0%, ${p.event.hex} ${capPct}%, ${tail} ${capPct}%, ${tail} 100%)`;
-            } else if (!isStartSeg) {
-              bar.style.background = tail;
+            bar.style.background = hexToRgba(p.event.hex, 0.32);
+            if (isStartSeg) {
+              bar.style.borderLeft = `3px solid ${p.event.hex}`;
+              bar.style.paddingLeft = '4px';
+              bar.style.borderRadius = '2px';
             }
-            // else: single-day all-day event — leave the default solid
-            // .allday background from CSS as-is.
           }
           bar.textContent = p.event.allDay ? p.event.title : `${p.event.timeLabel.split(' ')[0]} ${p.event.title}`;
           bar.title = p.event.title;
